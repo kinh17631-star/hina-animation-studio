@@ -800,17 +800,35 @@
 			// Export the loaded character as standard glTF/GLB. VRM download keeps
 			// the original VRM file intact; it is not a re-export of edited poses.
 			const gltfExporter = new GLTFExporter();
-			function downloadExport(data, filename, mimeType) {
+			let exportInProgress = false;
+
+			function isIOSDevice() {
+				return /iPad|iPhone|iPod/.test(navigator.userAgent)
+					|| (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+			}
+
+			function downloadExport(data, filename, mimeType, iosWindow = null) {
 				const blob = data instanceof Blob ? data : new Blob([data], { type: mimeType });
 				const objectUrl = URL.createObjectURL(blob);
+
+				// iOS Safari is more reliable when the destination tab is opened
+				// during the original tap, then navigated after the async export.
+				if (iosWindow && !iosWindow.closed) {
+					iosWindow.location.href = objectUrl;
+					setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+					return;
+				}
+
 				const link = document.createElement('a');
 				link.href = objectUrl;
 				link.download = filename;
+				link.style.display = 'none';
 				document.body.appendChild(link);
 				link.click();
 				link.remove();
-				setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+				setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
 			}
+
 			function getMaterialValue(material, key, fallback = null) {
 				if (material[key] !== undefined && material[key] !== null) return material[key];
 				const uniform = material.uniforms?.[key];
@@ -819,8 +837,6 @@
 
 			function makeExportMaterial(source) {
 				// MToon is a custom shader, so convert its glTF-relevant inputs to PBR.
-				// Keep the original texture objects; GLTFExporter will embed them in GLB
-				// or write them as image resources for .gltf.
 				const color = getMaterialValue(source, 'color', new THREE.Color(0xffffff));
 				const map = getMaterialValue(source, 'map');
 				const emissive = getMaterialValue(source, 'emissive', new THREE.Color(0x000000));
@@ -850,6 +866,7 @@
 			}
 
 			function disposeExportMaterials(exportScene) {
+				if (!exportScene) return;
 				exportScene.traverse((object) => {
 					if (!object.isMesh || !object.material) return;
 					const materials = Array.isArray(object.material) ? object.material : [object.material];
@@ -857,49 +874,66 @@
 				});
 			}
 
-			function exportCharacter(binary) {
-				if (!currentModelRoot) return;
+			async function exportCharacter(binary, iosWindow = null) {
+				if (!currentModelRoot || exportInProgress) {
+					if (iosWindow && !iosWindow.closed) iosWindow.close();
+					return;
+				}
+
+				exportInProgress = true;
+				exportGlbBtn.disabled = true;
+				exportGltfBtn.disabled = true;
 				statusDiv.textContent = binary ? 'Preparing GLB export...' : 'Preparing glTF export...';
 
-				// SkeletonUtils.clone correctly rebinds SkinnedMesh objects to the cloned
-				// bones. A normal Object3D.clone can leave exported rigs incorrectly bound.
-				const exportScene = SkeletonUtils.clone(currentModelRoot);
-				const materialCache = new Map();
-				exportScene.traverse((object) => {
-					if (!object.isMesh || !object.material) return;
-					const convert = (material) => {
-						if (!materialCache.has(material)) materialCache.set(material, makeExportMaterial(material));
-						return materialCache.get(material);
-					};
-					object.material = Array.isArray(object.material)
-						? object.material.map(convert)
-						: convert(object.material);
-				});
+				let exportScene = null;
+				try {
+					// Clone the rig so exporter-side material changes never alter the preview.
+					exportScene = SkeletonUtils.clone(currentModelRoot);
+					const materialCache = new Map();
+					exportScene.traverse((object) => {
+						if (!object.isMesh || !object.material) return;
+						const convert = (material) => {
+							if (!materialCache.has(material)) materialCache.set(material, makeExportMaterial(material));
+							return materialCache.get(material);
+						};
+						object.material = Array.isArray(object.material)
+							? object.material.map(convert)
+							: convert(object.material);
+					});
 
-				const options = { binary, onlyVisible: true, trs: false };
-				if (vrmaAnimationClip) options.animations = [vrmaAnimationClip];
+					const options = { binary, onlyVisible: true, trs: false };
+					if (vrmaAnimationClip) options.animations = [vrmaAnimationClip];
 
-				gltfExporter.parse(exportScene, (result) => {
-					try {
-						if (binary) {
-							downloadExport(result, 'hina-character.glb', 'model/gltf-binary');
-						} else {
-							downloadExport(JSON.stringify(result, null, 2), 'hina-character.gltf', 'model/gltf+json');
-						}
-						statusDiv.textContent = binary
-							? 'GLB exported. MToon appearance is converted to standard PBR materials.'
-							: 'glTF exported. Keep the .gltf and its generated resource files together.';
-					} finally {
-						disposeExportMaterials(exportScene);
+					// parseAsync turns exporter failures into catchable errors instead of
+					// leaving the interface stuck in the "Preparing" state.
+					const result = await gltfExporter.parseAsync(exportScene, options);
+					if (binary) {
+						downloadExport(result, 'hina-character.glb', 'model/gltf-binary', iosWindow);
+					} else {
+						downloadExport(JSON.stringify(result, null, 2), 'hina-character.gltf', 'model/gltf+json', iosWindow);
 					}
-				}, (error) => {
-					disposeExportMaterials(exportScene);
+					statusDiv.textContent = binary
+						? 'GLB export completed. If it opened in a new tab, use Share to save the file.'
+						: 'glTF export completed. Keep the .gltf and its resource files together.';
+				} catch (error) {
+					if (iosWindow && !iosWindow.closed) iosWindow.close();
 					console.error('Export failed:', error);
-					statusDiv.textContent = 'Export failed: ' + (error?.message || error);
-				}, options);
+					statusDiv.textContent = 'Export failed: ' + (error?.message || String(error));
+				} finally {
+					disposeExportMaterials(exportScene);
+					exportInProgress = false;
+					exportGlbBtn.disabled = !currentModelRoot;
+					exportGltfBtn.disabled = !currentModelRoot;
+				}
 			}
-			exportGlbBtn.addEventListener('click', () => exportCharacter(true));
-			exportGltfBtn.addEventListener('click', () => exportCharacter(false));
+			exportGlbBtn.addEventListener('click', () => {
+				const iosWindow = isIOSDevice() ? window.open('about:blank', '_blank') : null;
+				exportCharacter(true, iosWindow);
+			});
+			exportGltfBtn.addEventListener('click', () => {
+				const iosWindow = isIOSDevice() ? window.open('about:blank', '_blank') : null;
+				exportCharacter(false, iosWindow);
+			});
 			exportVrmBtn.addEventListener('click', () => {
 				if (!currentVrmSourceBlob) return;
 				downloadExport(currentVrmSourceBlob, 'hina-character.vrm', 'model/gltf-binary');
