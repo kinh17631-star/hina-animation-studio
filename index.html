@@ -902,7 +902,33 @@
 					});
 
 					const options = { binary, onlyVisible: true, trs: false };
-					if (vrmaAnimationClip) options.animations = [vrmaAnimationClip];
+					if (vrmaAnimationClip) {
+						let exportClip = vrmaAnimationClip;
+
+						// VRMA clips can contain VRM-only look-at/expression tracks.
+						// Those animate runtime properties (for example vrmLookAt.yaw),
+						// not glTF node transforms, and GLTFExporter cannot serialize them.
+						// Keep the standard bone transform tracks so skeletal keyframes remain.
+						if (currentVrm) {
+							const supportedTracks = vrmaAnimationClip.tracks.filter((track) => {
+								const name = track.name.toLowerCase();
+								return !name.includes('vrmlookat')
+									&& !name.includes('expressionmanager')
+									&& !name.includes('expressions');
+							});
+							if (supportedTracks.length !== vrmaAnimationClip.tracks.length) {
+								exportClip = new THREE.AnimationClip(
+									vrmaAnimationClip.name,
+									vrmaAnimationClip.duration,
+									supportedTracks
+								);
+							}
+							if (supportedTracks.length === 0) {
+								throw new Error('This VRMA contains no standard bone tracks that can be exported to glTF.');
+							}
+						}
+						options.animations = [exportClip];
+					}
 
 					// parseAsync turns exporter failures into catchable errors instead of
 					// leaving the interface stuck in the "Preparing" state.
