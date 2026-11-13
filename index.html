@@ -807,18 +807,76 @@
 				link.remove();
 				setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
 			}
+			function getMaterialValue(material, key, fallback = null) {
+				if (material[key] !== undefined && material[key] !== null) return material[key];
+				const uniform = material.uniforms?.[key];
+				return uniform?.value ?? fallback;
+			}
+
+			function makeExportMaterial(source) {
+				// VRM MToon is a custom shader and GLTFExporter cannot serialize it.
+				// Convert its common PBR inputs to a standard glTF-compatible material.
+				const color = getMaterialValue(source, 'color', new THREE.Color(0xffffff));
+				const map = getMaterialValue(source, 'map');
+				const emissive = getMaterialValue(source, 'emissive', new THREE.Color(0x000000));
+				const emissiveMap = getMaterialValue(source, 'emissiveMap');
+				const alphaTest = getMaterialValue(source, 'alphaTest', 0);
+				const opacity = getMaterialValue(source, 'opacity', 1);
+				const transparent = Boolean(getMaterialValue(source, 'transparent', opacity < 1));
+				const converted = new THREE.MeshStandardMaterial({
+					name: source.name || 'VRM_Material',
+					color: color?.isColor ? color.clone() : new THREE.Color(0xffffff),
+					map: map?.isTexture ? map : null,
+					emissive: emissive?.isColor ? emissive.clone() : new THREE.Color(0x000000),
+					emissiveMap: emissiveMap?.isTexture ? emissiveMap : null,
+					transparent,
+					opacity,
+					alphaTest,
+					side: source.side ?? THREE.FrontSide,
+					metalness: 0,
+					roughness: 0.85,
+				});
+				converted.vertexColors = Boolean(source.vertexColors);
+				return converted;
+			}
+
 			function exportCharacter(binary) {
 				if (!currentVrm) return;
-				statusDiv.textContent = binary ? 'Creating GLB...' : 'Creating glTF...';
+				statusDiv.textContent = binary ? 'Preparing GLB export...' : 'Preparing glTF export...';
+
+				// Export a temporary clone so conversion never changes the live avatar.
+				const exportScene = currentVrm.scene.clone(true);
+				const materialCache = new Map();
+				exportScene.traverse((object) => {
+					if (!object.isMesh || !object.material) return;
+					const convert = (material) => {
+						if (!materialCache.has(material)) materialCache.set(material, makeExportMaterial(material));
+						return materialCache.get(material);
+					};
+					object.material = Array.isArray(object.material)
+						? object.material.map(convert)
+						: convert(object.material);
+				});
+
 				const options = { binary, onlyVisible: true, trs: false };
-				if (currentAction && vrmaAnimationClip) options.animations = [vrmaAnimationClip];
-				gltfExporter.parse(currentVrm.scene, (result) => {
+				// Include the selected clip even if playback is currently paused.
+				if (vrmaAnimationClip) options.animations = [vrmaAnimationClip];
+
+				gltfExporter.parse(exportScene, (result) => {
 					if (binary) {
 						downloadExport(result, 'hina-character.glb', 'model/gltf-binary');
 					} else {
 						downloadExport(JSON.stringify(result, null, 2), 'hina-character.gltf', 'model/gltf+json');
 					}
-					statusDiv.textContent = binary ? 'GLB exported.' : 'glTF exported.';
+					const materialCount = binary
+						? 'GLB'
+						: 'glTF';
+					statusDiv.textContent = materialCount + ' exported with standard materials. VRM expressions are not included in standard glTF.';
+					exportScene.traverse((object) => {
+						if (!object.isMesh || !object.material) return;
+						const materials = Array.isArray(object.material) ? object.material : [object.material];
+						materials.forEach((material) => material.dispose());
+					});
 				}, (error) => {
 					console.error('Export failed:', error);
 					statusDiv.textContent = 'Export failed: ' + (error?.message || error);
