@@ -330,6 +330,12 @@
 					<button id="pauseBtn" disabled>Pause</button>
 					<button id="stopBtn" disabled>Stop</button>
 				</div>
+				<div>
+					<label>Export:</label>
+					<button id="exportGlbBtn" disabled>Download GLB</button>
+					<button id="exportGltfBtn" disabled>Download glTF</button>
+					<button id="exportVrmBtn" disabled>Download VRM</button>
+				</div>
 			</div>
 
 			<div id="posePanel" class="tab-panel" hidden>
@@ -374,6 +380,7 @@
 			import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 			import { TransformControls } from 'three/addons/controls/TransformControls.js';
+			import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 			import { VRMLoaderPlugin, VRMUtils, VRMExpressionPresetName } from '@pixiv/three-vrm';
 			import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
 
@@ -382,6 +389,9 @@
 			const playBtn = document.getElementById('playBtn');
 			const pauseBtn = document.getElementById('pauseBtn');
 			const stopBtn = document.getElementById('stopBtn');
+			const exportGlbBtn = document.getElementById('exportGlbBtn');
+			const exportGltfBtn = document.getElementById('exportGltfBtn');
+			const exportVrmBtn = document.getElementById('exportVrmBtn');
 			const statusDiv = document.getElementById('status');
 			const vrmNameSpan = document.getElementById('vrmName');
 			const openFileBtn = document.getElementById('openFileBtn');
@@ -430,6 +440,7 @@
 
 			// --- Global Variables for VRM and Animation ---
 			let currentVrm = undefined;
+			let currentVrmSourceBlob = undefined;
 			let currentMixer = undefined;
 			let currentAction = undefined;
 			let vrmaAnimationClip = undefined; // Store the final THREE.AnimationClip
@@ -487,6 +498,9 @@
 			 */
 			async function loadVRM(url, displayName = url) {
 				try {
+					const sourceResponse = await fetch(url);
+					if (!sourceResponse.ok) throw new Error(`Could not read source VRM (${sourceResponse.status})`);
+					const sourceBlob = await sourceResponse.blob();
 					statusDiv.textContent = 'VRMモデルを読み込み中...';
 
 					return new Promise((resolve, reject) => {
@@ -524,6 +538,7 @@
 								scene.add( vrm.scene );
 								vrm.scene.rotation.y = Math.PI; // モデルを正面に回転
 								currentVrm = vrm;
+								currentVrmSourceBlob = sourceBlob;
 
 								// Create a new AnimationMixer for the current VRM
 								currentMixer = new THREE.AnimationMixer( vrm.scene );
@@ -736,6 +751,9 @@
 				playBtn.disabled = !(hasVrm && hasVrma);
 				pauseBtn.disabled = !(hasVrm && hasVrma);
 				stopBtn.disabled = !(hasVrm && hasVrma);
+				exportGlbBtn.disabled = !hasVrm;
+				exportGltfBtn.disabled = !hasVrm;
+				exportVrmBtn.disabled = !hasVrm || !currentVrmSourceBlob;
 			}
 
 			// Monotonically increasing token so that a rapid second click discards
@@ -774,6 +792,45 @@
 			playBtn.addEventListener('click', playAnimation);
 			pauseBtn.addEventListener('click', pauseAnimation);
 			stopBtn.addEventListener('click', stopAnimation);
+
+			// Export the loaded character as standard glTF/GLB. VRM download keeps
+			// the original VRM file intact; it is not a re-export of edited poses.
+			const gltfExporter = new GLTFExporter();
+			function downloadExport(data, filename, mimeType) {
+				const blob = data instanceof Blob ? data : new Blob([data], { type: mimeType });
+				const objectUrl = URL.createObjectURL(blob);
+				const link = document.createElement('a');
+				link.href = objectUrl;
+				link.download = filename;
+				document.body.appendChild(link);
+				link.click();
+				link.remove();
+				setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+			}
+			function exportCharacter(binary) {
+				if (!currentVrm) return;
+				statusDiv.textContent = binary ? 'Creating GLB...' : 'Creating glTF...';
+				const options = { binary, onlyVisible: true, trs: false };
+				if (currentAction && vrmaAnimationClip) options.animations = [vrmaAnimationClip];
+				gltfExporter.parse(currentVrm.scene, (result) => {
+					if (binary) {
+						downloadExport(result, 'hina-character.glb', 'model/gltf-binary');
+					} else {
+						downloadExport(JSON.stringify(result, null, 2), 'hina-character.gltf', 'model/gltf+json');
+					}
+					statusDiv.textContent = binary ? 'GLB exported.' : 'glTF exported.';
+				}, (error) => {
+					console.error('Export failed:', error);
+					statusDiv.textContent = 'Export failed: ' + (error?.message || error);
+				}, options);
+			}
+			exportGlbBtn.addEventListener('click', () => exportCharacter(true));
+			exportGltfBtn.addEventListener('click', () => exportCharacter(false));
+			exportVrmBtn.addEventListener('click', () => {
+				if (!currentVrmSourceBlob) return;
+				downloadExport(currentVrmSourceBlob, 'hina-character.vrm', 'model/gltf-binary');
+				statusDiv.textContent = 'Original VRM downloaded (source file; edits are not baked in).';
+			});
 
 			// --- User File Loading (file picker + drag-and-drop) ---
 			/**
