@@ -646,7 +646,7 @@
 			 * Starts playing the loaded VRMA animation.
 			 */
 			function playAnimation() {
-				if (currentVrm && vrmaAnimationClip && currentMixer) {
+				if (currentModelRoot && vrmaAnimationClip && currentMixer) {
 					// Re-pressing Play on the already-active clip just resumes it.
 					if (currentAction && currentAction.getClip() === vrmaAnimationClip) {
 						currentAction.paused = false;
@@ -696,7 +696,7 @@
 						statusDiv.textContent = 'アニメーションの再生中にエラーが発生しました: ' + error.message;
 					}
 				} else {
-					statusDiv.textContent = 'VRMモデルとアニメーションが読み込まれている必要があります。';
+					statusDiv.textContent = 'Load a model with an animation before pressing Play.';
 				}
 			}
 
