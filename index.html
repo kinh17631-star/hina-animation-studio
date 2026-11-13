@@ -319,8 +319,8 @@
 				<div>
 					<label>VRM Model:</label>
 					<span id="vrmName">sample.vrm</span>
-					<button id="openFileBtn">Open .vrm / .vrma…</button>
-					<input type="file" id="filePicker" accept=".vrm,.vrma,.glb,.gltf" multiple hidden />
+					<button id="openFileBtn">Open 3D File…</button>
+					<input type="file" id="filePicker" accept="*/*" multiple hidden />
 				</div>
 				<div id="vrmaButtons">
 					<label>VRMA Animations:</label>
@@ -932,6 +932,7 @@
 									if (currentAction) currentAction.stop();
 									currentAction = undefined;
 									if (currentModelRoot) {
+										deselectBone();
 										scene.remove(currentModelRoot);
 										if (currentVrm) VRMUtils.deepDispose(currentModelRoot);
 										else currentModelRoot.traverse((o) => { if (o.geometry) o.geometry.dispose(); const ms = Array.isArray(o.material) ? o.material : [o.material]; ms.filter(Boolean).forEach((m) => m.dispose()); });
