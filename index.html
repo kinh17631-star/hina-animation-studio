@@ -320,7 +320,7 @@
 					<label>VRM Model:</label>
 					<span id="vrmName">sample.vrm</span>
 					<button id="openFileBtn">Open .vrm / .vrma…</button>
-					<input type="file" id="filePicker" accept=".vrm,.vrma" multiple hidden />
+					<input type="file" id="filePicker" accept=".vrm,.vrma,.glb,.gltf" multiple hidden />
 				</div>
 				<div id="vrmaButtons">
 					<label>VRMA Animations:</label>
@@ -441,6 +441,7 @@
 
 			// --- Global Variables for VRM and Animation ---
 			let currentVrm = undefined;
+			let currentModelRoot = undefined;
 			let currentVrmSourceBlob = undefined;
 			let currentMixer = undefined;
 			let currentAction = undefined;
@@ -539,6 +540,7 @@
 								scene.add( vrm.scene );
 								vrm.scene.rotation.y = Math.PI; // モデルを正面に回転
 								currentVrm = vrm;
+								currentModelRoot = vrm.scene;
 								currentVrmSourceBlob = sourceBlob;
 
 								// Create a new AnimationMixer for the current VRM
@@ -742,6 +744,7 @@
 			function updateButtons() {
 				const hasVrm = currentVrm !== undefined;
 				const hasVrma = vrmaAnimationClip !== undefined;
+				const hasModel = currentModelRoot !== undefined;
 
 				// Enable VRMA selection buttons once VRM is loaded
 				vrmaButtonsContainer.querySelectorAll('.vrma-btn').forEach(btn => {
@@ -749,11 +752,11 @@
 				});
 
 				// Enable play/pause/stop buttons only if both VRM and an animation are loaded
-				playBtn.disabled = !(hasVrm && hasVrma);
-				pauseBtn.disabled = !(hasVrm && hasVrma);
-				stopBtn.disabled = !(hasVrm && hasVrma);
-				exportGlbBtn.disabled = !hasVrm;
-				exportGltfBtn.disabled = !hasVrm;
+				playBtn.disabled = !(hasModel && hasVrma && currentMixer);
+				pauseBtn.disabled = !(hasModel && hasVrma && currentMixer);
+				stopBtn.disabled = !(hasModel && hasVrma && currentMixer);
+				exportGlbBtn.disabled = !hasModel;
+				exportGltfBtn.disabled = !hasModel;
 				exportVrmBtn.disabled = !hasVrm || !currentVrmSourceBlob;
 			}
 
@@ -855,12 +858,12 @@
 			}
 
 			function exportCharacter(binary) {
-				if (!currentVrm) return;
+				if (!currentModelRoot) return;
 				statusDiv.textContent = binary ? 'Preparing GLB export...' : 'Preparing glTF export...';
 
 				// SkeletonUtils.clone correctly rebinds SkinnedMesh objects to the cloned
 				// bones. A normal Object3D.clone can leave exported rigs incorrectly bound.
-				const exportScene = SkeletonUtils.clone(currentVrm.scene);
+				const exportScene = SkeletonUtils.clone(currentModelRoot);
 				const materialCache = new Map();
 				exportScene.traverse((object) => {
 					if (!object.isMesh || !object.material) return;
@@ -911,30 +914,45 @@
 			async function handleFiles(fileList) {
 				for (const file of fileList) {
 					const lower = file.name.toLowerCase();
-
 					if (lower.endsWith('.vrm')) {
 						const url = URL.createObjectURL(file);
-						try {
-							await loadVRM(url, file.name);
-							updateButtons();
-						} finally {
-							URL.revokeObjectURL(url); // VRM is read once during load; safe to revoke after
-						}
+						try { await loadVRM(url, file.name); updateButtons(); }
+						finally { URL.revokeObjectURL(url); }
 					} else if (lower.endsWith('.vrma')) {
-						// Not revoked: selectAnimation() re-fetches this URL every time its
-						// button is clicked, so the object URL must stay alive for the page's life.
 						const url = URL.createObjectURL(file);
 						addVrmaButton(file.name.replace(/\.vrma$/i, ''), url);
 						updateButtons();
-						if (currentVrm) {
-							await selectAnimation(url);
-						}
-					} else {
-						statusDiv.textContent = `未対応のファイル形式です: ${file.name}（.vrm / .vrma のみ）`;
-					}
+						if (currentVrm) await selectAnimation(url);
+					} else if (lower.endsWith('.glb') || lower.endsWith('.gltf')) {
+						try {
+							statusDiv.textContent = 'Loading 3D model...';
+							const data = await file.arrayBuffer();
+							await new Promise((resolve, reject) => loader.parse(data, '', (gltf) => {
+								try {
+									if (currentAction) currentAction.stop();
+									currentAction = undefined;
+									if (currentModelRoot) {
+										scene.remove(currentModelRoot);
+										if (currentVrm) VRMUtils.deepDispose(currentModelRoot);
+										else currentModelRoot.traverse((o) => { if (o.geometry) o.geometry.dispose(); const ms = Array.isArray(o.material) ? o.material : [o.material]; ms.filter(Boolean).forEach((m) => m.dispose()); });
+									}
+									currentVrm = undefined;
+									currentVrmSourceBlob = undefined;
+									currentModelRoot = gltf.scene;
+									currentModelRoot.rotation.y = Math.PI;
+									scene.add(currentModelRoot);
+									currentMixer = new THREE.AnimationMixer(currentModelRoot);
+									vrmaAnimationClip = gltf.animations && gltf.animations[0];
+									vrmNameSpan.textContent = file.name;
+									buildPoseUI(); buildFaceUI(); updateButtons();
+									statusDiv.textContent = gltf.animations && gltf.animations.length ? '3D model loaded. First embedded animation is ready.' : '3D model loaded. GLB/glTF export is ready.';
+									resolve();
+								} catch (error) { reject(error); }
+							}, reject));
+						} catch (error) { console.error(error); statusDiv.textContent = 'Could not load model: ' + (error.message || error); }
+					} else { statusDiv.textContent = 'Unsupported file. Choose .vrm, .vrma, .glb or .gltf.'; }
 				}
 			}
-
 			openFileBtn.addEventListener('click', () => filePicker.click());
 			filePicker.addEventListener('change', async (e) => {
 				await handleFiles(e.target.files);
